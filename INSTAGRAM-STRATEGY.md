@@ -1,10 +1,10 @@
-# EmpowerLogic Instagram Transformation Strategy
+# EmpowerAutomate Instagram Transformation Strategy
 
 ## Account Rebrand (8K Followers → Client-Generating Machine)
 
 ### Bio Formula
 ```
-EmpowerLogic | AI Automation Agency
+EmpowerAutomate | AI Automation Agency
 We build AI systems so you never miss a lead again
 ⚡ Law Firms • Contractors • Creators
 🔽 Free Automation Audit 👇
@@ -12,7 +12,7 @@ We build AI systems so you never miss a lead again
 ```
 
 ### Username
-@empowerlogic or @empowerlogic.ai
+@empowerautomate or @empowerautomate.ai
 
 ---
 
@@ -117,6 +117,6 @@ Reel/Carousel (Awareness)
 
 ## Pinned Posts (Top 3)
 
-1. **"What is EmpowerLogic?"** — Carousel explaining your services
+1. **"What is EmpowerAutomate?"** — Carousel explaining your services
 2. **Case Study** — Mike's law firm transformation with real numbers
 3. **"Is AI Right for Your Business?"** — Reel with CTA to free audit
