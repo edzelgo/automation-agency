@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repository Is
 
-EmpowerAutomate is a two-part project:
+EmpowerAutomate is a three-part project:
 
 1. **Static marketing website** (`index.html` + `styles.css` + `script.js`) — a single-page agency site with no build step, no framework, and no dependencies.
-2. **`daily_agent.py`** — a Python 3 CLI tool the founder runs each morning to see their current business phase, top 3 priorities for the day, and track milestone progress.
+2. **`daily_agent.py`** — a simple Python 3 CLI (stdlib only) the founder runs each morning for phase tracking and daily priorities. No AI calls.
+3. **`zyx.py`** — the autonomous executive assistant powered by the Claude API. Handles morning briefings, interactive chat, autonomous idea generation, launch planning, and goal tracking. This is the primary AI layer.
 
-The markdown files (`BUSINESS-PLAN.md`, `SCALING-ROADMAP.md`, `INSTAGRAM-STRATEGY.md`) are business planning documents, not code. The agent script references `SCALING-ROADMAP.md` by name in some output strings.
+The markdown files (`BUSINESS-PLAN.md`, `SCALING-ROADMAP.md`, `INSTAGRAM-STRATEGY.md`) are business planning documents, not code. `daily_agent.py` references `SCALING-ROADMAP.md` by name in some output strings.
 
 ## Running Things
 
@@ -18,12 +19,29 @@ The markdown files (`BUSINESS-PLAN.md`, `SCALING-ROADMAP.md`, `INSTAGRAM-STRATEG
 python3 -m http.server 8080
 ```
 
-**Daily agent**:
+**Daily agent** (no API key needed):
 ```bash
 python3 daily_agent.py
 ```
 
-The agent has no external dependencies — only Python stdlib (`json`, `os`, `datetime`). It persists state to `agent_data.json` in the same directory (this file is runtime state, not committed).
+**Zyx — autonomous executive assistant** (requires Anthropic API key):
+```bash
+pip install -r requirements.txt
+export ANTHROPIC_API_KEY=your_key_here
+
+python3 zyx.py                        # morning briefing
+python3 zyx.py chat                   # interactive conversation
+python3 zyx.py think                  # autonomous idea generation
+python3 zyx.py launch new             # plan a launch
+python3 zyx.py launch                 # view all launches
+python3 zyx.py launch complete NAME   # mark launch complete
+python3 zyx.py launch note NAME TEXT  # add a note to a launch
+python3 zyx.py ideas                  # view saved idea bank
+python3 zyx.py goals set GOAL         # set a weekly goal
+python3 zyx.py goals done             # mark a goal complete
+```
+
+`daily_agent.py` persists state to `agent_data.json`. `zyx.py` persists its own memory (ideas, launches, goals, conversation history, briefing log) to `zyx_memory.json`. Neither file is committed — both are runtime state.
 
 ## Architecture: daily_agent.py
 
@@ -52,6 +70,31 @@ The `interactive_menu()` function is the entry point and calls itself recursivel
 ## Architecture: Website
 
 The site is a single scrolling page with anchor-linked sections: `#services`, `#niches`, `#process`, `#pricing`, `#contact`. All styling is in `styles.css` with no CSS framework. `script.js` handles three things only: mobile nav toggle, smooth scroll for anchor links, and the contact form submission (currently just an `alert()` — no backend).
+
+## Architecture: zyx.py
+
+`zyx.py` uses the Anthropic Python SDK with streaming (`client.messages.stream`). All Claude calls share a single system prompt (`ZYX_SYSTEM`) that defines the Zyx persona — direct, opinionated, business-focused. Business state is pulled from `agent_data.json` and assembled into a plain-text `build_business_context()` block that gets prepended to every prompt.
+
+**Modes and their prompting strategy:**
+- `morning` — single-turn, tight format prompt (situation / top 3 / big move / watch out), max 900 tokens
+- `chat` — multi-turn with persisted `conversation_history` (last 40 messages stored in `zyx_memory.json`); business context only injected on the first turn of a session
+- `think` — single-turn autonomous session that generates content ideas, a lead gen play, a bottleneck diagnosis, a new offer idea, and a highest-leverage recommendation; full response saved to idea bank
+- `launch new` — single-turn prompt that builds a structured launch plan (pre-launch timeline, launch day checklist, post-launch actions, success metric)
+
+**Memory schema** (`zyx_memory.json`):
+```json
+{
+  "ideas": [{"idea": "...", "date": "...", "source": "manual|think_session", "full": "..."}],
+  "launches": [{"name": "...", "start_date": "...", "target_date": "...", "status": "active|complete", "plan": "...", "notes": []}],
+  "weekly_goals": [{"goal": "...", "date": "...", "done": false}],
+  "flags": [{"text": "...", "date": "..."}],
+  "conversation_history": [],
+  "briefing_log": [],
+  "last_briefing_date": "..."
+}
+```
+
+The `PHASES` list in `zyx.py` must stay in sync with the one in `daily_agent.py` — both define the same 5-phase roadmap and are read independently.
 
 ## Key Conventions
 
