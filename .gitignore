@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 agent_data.json
 zyx_memory.json
+zyx_config.json

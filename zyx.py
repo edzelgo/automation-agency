@@ -14,17 +14,11 @@ Usage:
   python3 zyx.py goals set GOAL         Add a weekly goal
   python3 zyx.py goals done             Mark a goal complete
   python3 zyx.py email                  Send morning briefing by email only
+  python3 zyx.py setup                  First-time setup wizard
   python3 zyx.py help                   Show this help
 
-Email setup (Gmail):
-  export ZYX_EMAIL_FROM="you@gmail.com"
-  export ZYX_EMAIL_APP_PASSWORD="xxxx xxxx xxxx xxxx"
-  export ZYX_EMAIL_TO="you@gmail.com"   # optional, defaults to FROM
-
-  Get an App Password at: myaccount.google.com → Security → App passwords
-  When set, morning briefings are emailed automatically in addition to
-  printing to the terminal. Use 'python3 zyx.py email' with cron to
-  have Zyx email you every morning without opening a terminal.
+First time? Just run:
+  python3 zyx.py setup
 """
 
 import json
@@ -40,6 +34,7 @@ from anthropic import Anthropic
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AGENT_DATA_FILE = os.path.join(BASE_DIR, "agent_data.json")
 ZYX_MEMORY_FILE = os.path.join(BASE_DIR, "zyx_memory.json")
+ZYX_CONFIG_FILE = os.path.join(BASE_DIR, "zyx_config.json")
 
 MODEL = "claude-sonnet-4-6"
 
@@ -73,6 +68,98 @@ YOUR COMMUNICATION STYLE:
 
 BUSINESS CONTEXT:
 EmpowerAutomate sells done-for-you AI automation to law firms, contractors/HVAC, busy professionals, and content creators. Services range from $1,500–$6,000/mo retainers. The tech stack includes Make.com, n8n, Zapier, Vapi, GoHighLevel, and custom GPT chatbots. The main sales channel right now is Instagram (8K followers) and warm network outreach. The first proof of concept is Mike's law firm/medical project."""
+
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+
+def load_config():
+    if os.path.exists(ZYX_CONFIG_FILE):
+        with open(ZYX_CONFIG_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(cfg):
+    with open(ZYX_CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def get_cfg(key, env_var=None):
+    """Read a value from zyx_config.json, falling back to an env var."""
+    cfg = load_config()
+    return cfg.get(key) or (os.environ.get(env_var, "") if env_var else "")
+
+
+def setup_mode():
+    print()
+    print("═" * 62)
+    print("  ZYX  ·  SETUP")
+    print("═" * 62)
+    print()
+    print("  I'll ask for three things. This is a one-time setup.")
+    print("  Everything saves to zyx_config.json — you never do this again.")
+    print()
+
+    cfg = load_config()
+
+    # Anthropic API key
+    current = cfg.get("anthropic_api_key", "")
+    masked = f"...{current[-6:]}" if current else "not set"
+    print(f"  1. Anthropic API key (current: {masked})")
+    print("     Get one at: console.anthropic.com → API Keys")
+    val = input("     Paste key (Enter to keep current): ").strip()
+    if val:
+        cfg["anthropic_api_key"] = val
+
+    print()
+
+    # Gmail address
+    current = cfg.get("email_from", "")
+    print(f"  2. Your Gmail address (current: {current or 'not set'})")
+    val = input("     Email: ").strip()
+    if val:
+        cfg["email_from"] = val
+        cfg["email_to"] = val  # send to yourself by default
+
+    print()
+
+    # App password
+    current = cfg.get("email_app_password", "")
+    masked = "set" if current else "not set"
+    print(f"  3. Gmail App Password (current: {masked})")
+    print("     How to get one:")
+    print("     → Go to myaccount.google.com on your phone")
+    print("     → Tap Security → 2-Step Verification → App passwords")
+    print("     → Create one called 'Zyx', copy the 16-character code")
+    val = input("     Paste App Password: ").strip()
+    if val:
+        cfg["email_app_password"] = val
+
+    save_config(cfg)
+
+    print()
+    print("  ✓ Saved. Testing email now...")
+    print()
+
+    # Send a test email
+    _send_email(
+        from_addr=cfg.get("email_from", ""),
+        app_password=cfg.get("email_app_password", ""),
+        to_addr=cfg.get("email_to", cfg.get("email_from", "")),
+        subject="Zyx is set up ✓",
+        plain="Zyx is configured and ready. You'll receive your morning briefing here every day.",
+        html="""
+        <div style="font-family:sans-serif;padding:32px;background:#f3f4f6;">
+          <div style="background:#0f172a;color:white;padding:24px;border-radius:12px 12px 0 0;">
+            <div style="font-size:22px;font-weight:800;">ZYX</div>
+            <div style="font-size:13px;color:#94a3b8;margin-top:4px;">Setup complete</div>
+          </div>
+          <div style="background:white;padding:24px;border-radius:0 0 12px 12px;">
+            <p style="font-size:16px;color:#111827;">You're all set. Zyx will email you your morning briefing every weekday.</p>
+            <p style="font-size:14px;color:#6b7280;">Run <code>python3 zyx.py</code> any time to get a briefing on demand.</p>
+          </div>
+        </div>""",
+    )
 
 
 # ─── Data helpers ────────────────────────────────────────────────────────────
@@ -228,35 +315,43 @@ def _briefing_to_html(text, ctx):
 </html>"""
 
 
-def send_briefing_email(briefing_text, ctx):
-    """Send the morning briefing via Gmail SMTP. Silent no-op if env vars not set."""
-    email_from = os.environ.get("ZYX_EMAIL_FROM", "").strip()
-    app_password = os.environ.get("ZYX_EMAIL_APP_PASSWORD", "").strip()
-    email_to = os.environ.get("ZYX_EMAIL_TO", email_from).strip()
-
-    if not email_from or not app_password:
-        return  # email not configured — skip silently
-
-    date_str = datetime.now().strftime("%A, %B %d")
-    subject = f"Zyx · Morning Briefing — {date_str}"
-
+def _send_email(from_addr, app_password, to_addr, subject, plain, html):
+    """Low-level send via Gmail SMTP SSL."""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = f"Zyx (EmpowerAutomate) <{email_from}>"
-    msg["To"] = email_to
-
-    # Plain-text fallback
-    msg.attach(MIMEText(briefing_text, "plain"))
-    # HTML version
-    msg.attach(MIMEText(_briefing_to_html(briefing_text, ctx), "html"))
-
+    msg["From"] = f"Zyx (EmpowerAutomate) <{from_addr}>"
+    msg["To"] = to_addr
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html, "html"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(email_from, app_password)
-            server.sendmail(email_from, email_to, msg.as_string())
-        print(f"  [Email sent to {email_to}]\n")
+            server.login(from_addr, app_password)
+            server.sendmail(from_addr, to_addr, msg.as_string())
+        print(f"  [Email sent to {to_addr}]\n")
     except Exception as e:
         print(f"  [Email failed: {e}]\n")
+
+
+def send_briefing_email(briefing_text, ctx):
+    """Send the morning briefing. Reads credentials from zyx_config.json."""
+    cfg = load_config()
+    # Fall back to env vars for backwards compatibility
+    email_from = cfg.get("email_from") or os.environ.get("ZYX_EMAIL_FROM", "")
+    app_password = cfg.get("email_app_password") or os.environ.get("ZYX_EMAIL_APP_PASSWORD", "")
+    email_to = cfg.get("email_to") or os.environ.get("ZYX_EMAIL_TO", email_from)
+
+    if not email_from or not app_password:
+        return  # not configured — skip silently
+
+    date_str = datetime.now().strftime("%A, %B %d")
+    _send_email(
+        from_addr=email_from,
+        app_password=app_password,
+        to_addr=email_to,
+        subject=f"Zyx · Morning Briefing — {date_str}",
+        plain=briefing_text,
+        html=_briefing_to_html(briefing_text, ctx),
+    )
 
 
 # ─── Modes ───────────────────────────────────────────────────────────────────
@@ -650,6 +745,10 @@ def main():
         print_help()
         return
 
+    if mode == "setup":
+        setup_mode()
+        return
+
     if mode == "ideas":
         ideas_mode(load_zyx_memory())
         return
@@ -658,10 +757,11 @@ def main():
         goals_mode(None, load_agent_data(), load_zyx_memory(), args)
         return
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    # Load API key from config file first, fall back to env var
+    api_key = get_cfg("anthropic_api_key", "ANTHROPIC_API_KEY")
     if not api_key:
-        print("\n  Zyx needs your Anthropic API key to think.")
-        print("  Run: export ANTHROPIC_API_KEY=your_key_here\n")
+        print("\n  Zyx isn't set up yet. Run this first:")
+        print("  python3 zyx.py setup\n")
         sys.exit(1)
 
     client = Anthropic(api_key=api_key)
