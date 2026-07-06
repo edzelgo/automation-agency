@@ -13,12 +13,26 @@ Usage:
   python3 zyx.py goals                  View weekly goals
   python3 zyx.py goals set GOAL         Add a weekly goal
   python3 zyx.py goals done             Mark a goal complete
+  python3 zyx.py email                  Send morning briefing by email only
   python3 zyx.py help                   Show this help
+
+Email setup (Gmail):
+  export ZYX_EMAIL_FROM="you@gmail.com"
+  export ZYX_EMAIL_APP_PASSWORD="xxxx xxxx xxxx xxxx"
+  export ZYX_EMAIL_TO="you@gmail.com"   # optional, defaults to FROM
+
+  Get an App Password at: myaccount.google.com → Security → App passwords
+  When set, morning briefings are emailed automatically in addition to
+  printing to the terminal. Use 'python3 zyx.py email' with cron to
+  have Zyx email you every morning without opening a terminal.
 """
 
 import json
 import os
+import smtplib
 import sys
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime
 
 from anthropic import Anthropic
@@ -138,9 +152,116 @@ def build_business_context(data, memory):
     return "\n".join(lines)
 
 
+# ─── Email ───────────────────────────────────────────────────────────────────
+
+def _briefing_to_html(text, ctx):
+    """Convert plain-text briefing to a clean HTML email."""
+    lines = text.split("\n")
+    html_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Section headers are lines like "SITUATION —" or "TODAY'S TOP 3 —"
+        if stripped and stripped == stripped.upper() and len(stripped) > 3:
+            html_lines.append(
+                f'<p style="margin:24px 0 6px;font-size:11px;font-weight:700;'
+                f'letter-spacing:1.5px;color:#6b7280;text-transform:uppercase;">'
+                f'{stripped}</p>'
+            )
+        elif stripped.startswith(("1.", "2.", "3.")):
+            html_lines.append(
+                f'<p style="margin:6px 0 6px 16px;font-size:15px;color:#111827;">'
+                f'{stripped}</p>'
+            )
+        elif stripped:
+            html_lines.append(
+                f'<p style="margin:4px 0;font-size:15px;line-height:1.6;color:#111827;">'
+                f'{stripped}</p>'
+            )
+        else:
+            html_lines.append('<div style="height:8px;"></div>')
+
+    date_str = datetime.now().strftime("%A, %B %d, %Y")
+    body = "\n".join(html_lines)
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 16px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+
+        <!-- Header -->
+        <tr><td style="background:#0f172a;border-radius:12px 12px 0 0;padding:28px 36px;">
+          <div style="font-size:11px;font-weight:700;letter-spacing:3px;color:#94a3b8;text-transform:uppercase;margin-bottom:6px;">Your Executive Assistant</div>
+          <div style="font-size:26px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">ZYX</div>
+          <div style="font-size:13px;color:#64748b;margin-top:4px;">Morning Briefing &nbsp;·&nbsp; {date_str}</div>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="background:#ffffff;padding:32px 36px;">
+          {body}
+        </td></tr>
+
+        <!-- Stats bar -->
+        <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 36px;">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="font-size:11px;color:#94a3b8;">EmpowerAutomate</td>
+              <td align="right" style="font-size:11px;color:#94a3b8;">Reply to this email to talk to Zyx</td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding:16px 36px;">
+          <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;">
+            Sent by Zyx &nbsp;·&nbsp; Your autonomous executive assistant &nbsp;·&nbsp; EmpowerAutomate
+          </p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def send_briefing_email(briefing_text, ctx):
+    """Send the morning briefing via Gmail SMTP. Silent no-op if env vars not set."""
+    email_from = os.environ.get("ZYX_EMAIL_FROM", "").strip()
+    app_password = os.environ.get("ZYX_EMAIL_APP_PASSWORD", "").strip()
+    email_to = os.environ.get("ZYX_EMAIL_TO", email_from).strip()
+
+    if not email_from or not app_password:
+        return  # email not configured — skip silently
+
+    date_str = datetime.now().strftime("%A, %B %d")
+    subject = f"Zyx · Morning Briefing — {date_str}"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Zyx (EmpowerAutomate) <{email_from}>"
+    msg["To"] = email_to
+
+    # Plain-text fallback
+    msg.attach(MIMEText(briefing_text, "plain"))
+    # HTML version
+    msg.attach(MIMEText(_briefing_to_html(briefing_text, ctx), "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(email_from, app_password)
+            server.sendmail(email_from, email_to, msg.as_string())
+        print(f"  [Email sent to {email_to}]\n")
+    except Exception as e:
+        print(f"  [Email failed: {e}]\n")
+
+
 # ─── Modes ───────────────────────────────────────────────────────────────────
 
-def morning_briefing(client, data, memory):
+def morning_briefing(client, data, memory, send_email=True):
     ctx = build_business_context(data, memory)
 
     print()
@@ -178,8 +299,10 @@ Keep the whole thing tight. I read this in 60 seconds over coffee."""
 
     print("\n")
 
+    if send_email:
+        send_briefing_email(response_text, ctx)
+
     memory["last_briefing_date"] = datetime.now().strftime("%Y-%m-%d")
-    # Keep a rolling log of the last 7 briefings
     if "briefing_log" not in memory:
         memory["briefing_log"] = []
     memory["briefing_log"].append({
@@ -546,7 +669,10 @@ def main():
     memory = load_zyx_memory()
 
     if mode in ("morning", "brief", "briefing"):
-        morning_briefing(client, data, memory)
+        morning_briefing(client, data, memory, send_email=True)
+    elif mode == "email":
+        # Email-only mode: generate briefing and send it, no terminal output needed for cron
+        morning_briefing(client, data, memory, send_email=True)
     elif mode == "chat":
         chat_mode(client, data, memory)
     elif mode == "think":
